@@ -30,36 +30,38 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Use a model that's available in the free tier
-# Options: "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-lite"
 try:
     model = genai.GenerativeModel('gemini-1.5-flash')
     logger.info("✅ Using gemini-1.5-flash model")
 except Exception as e:
     logger.error(f"❌ Error loading model: {e}")
-    # Fallback to a simpler model
     model = genai.GenerativeModel('gemini-pro')
     logger.info("✅ Using gemini-pro model")
 
 # Conversation states
-CHOOSING_ACTION, AWAITING_TEXT, AWAITING_PUBLISH = range(3)
+CHOOSING_ACTION, AWAITING_TEXT, AWAITING_LANGUAGE = range(3)
 
 # User preferences storage (in-memory, resets on restart)
 user_data_store = {}
 
-# Language settings
-LANGUAGES = {
-    "en": "English",
-    "ru": "Russian"
-}
-
 # ==================== AI HELPER FUNCTIONS ====================
 
-def get_ai_response(prompt: str, instruction: str) -> str:
+def get_ai_response(prompt: str, instruction: str, language: str = "English") -> str:
     """Send prompt to Gemini AI and get response."""
     try:
-        full_prompt = f"{instruction}\n\nUser text:\n{prompt}"
+        # Add language instruction for translation
+        if "translate" in instruction.lower():
+            full_prompt = f"{instruction}\n\nTranslate this text to {language}:\n\n{prompt}"
+        else:
+            full_prompt = f"{instruction}\n\nUser text:\n{prompt}"
+        
+        logger.info(f"Sending request to AI...")
         response = model.generate_content(full_prompt)
-        return response.text.strip() if response.text else "⚠️ No response generated. Please try again."
+        
+        if response and response.text:
+            return response.text.strip()
+        else:
+            return "⚠️ No response generated. Please try again."
     except Exception as e:
         logger.error(f"AI Error: {e}")
         return f"❌ AI Error: {str(e)}"
@@ -74,7 +76,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Initialize user data
     if user_id not in user_data_store:
         user_data_store[user_id] = {
-            "language": "en",
+            "language": "English",
             "history": []
         }
 
@@ -151,7 +153,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "shorten": "✂️ **Shorten**\n\nSend me your text and I'll make it more concise.",
         "expand": "📝 **Expand**\n\nSend me your text and I'll add more details and examples.",
         "analyze": "📊 **Analyze**\n\nSend me your text and I'll provide detailed improvement recommendations.",
-        "translate": "🌐 **Translate**\n\nSend me your text and I'll translate it to your preferred language.",
+        "translate": "🌐 **Translate**\n\nSend me your text and I'll translate it to your preferred language.\n\nSend the text you want to translate:",
         "publish": "📢 **Publish to Channel**\n\nSend me the text you want to publish. Make sure I'm an admin in your channel!",
         "help": "❓ **Help**\n\nUse /help for assistance."
     }
@@ -176,22 +178,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     # Define instructions for each action
     instructions = {
-        "create": "You are a professional content creator. Generate a well-structured, engaging post based on this topic. Use markdown formatting for headings and lists.",
+        "create": "You are a professional content creator. Generate a well-structured, engaging post based on this topic. Use markdown formatting for headings and lists. The response should be in English unless the user specifies otherwise.",
         "improve": "You are a professional editor. Improve this text's structure, readability, clarity, and engagement. Fix any issues but keep the original meaning.",
         "fix": "You are a proofreader. Fix all grammar, spelling, and punctuation errors. Keep the original meaning and tone.",
         "shorten": "You are a conciseness expert. Make this text more concise while keeping all key information. Remove redundancy and fluff.",
         "expand": "You are a content expander. Add more details, examples, and depth to this text. Make it more comprehensive.",
         "analyze": "You are a content analyst. Provide detailed recommendations for improving this text. Include structure, style, engagement, and SEO suggestions.",
-        "translate": "You are a professional translator. Translate this text to English (or ask user for language preference). Keep the original meaning and tone.",
+        "translate": "You are a professional translator. Translate the text to English. If it's already in English, translate it to Spanish or ask the user. Keep the original meaning and tone.",
         "publish": "You are a content optimizer. Clean and format this text for publication. Ensure it's polished and ready to share."
     }
 
     instruction = instructions.get(action, "You are a helpful AI writing assistant. Help the user with their text.")
 
-    # Get AI response
-    response = get_ai_response(user_text, instruction)
+    # For translation, default to English
+    target_language = "English"
+    if action == "translate":
+        # Try to detect if text is in Bengali or other language
+        # For simplicity, we'll always translate to English first
+        instruction = "You are a professional translator. Translate the following text to English. Keep the original meaning, tone, and style. If the text is already in English, translate it to Spanish instead."
 
-    if response and not response.startswith("❌ AI Error"):
+    # Get AI response
+    response = get_ai_response(user_text, instruction, target_language)
+
+    # Check if response is an error
+    if response and not response.startswith("❌ AI Error") and not response.startswith("⚠️"):
         # Truncate if too long (Telegram limit is 4096 characters)
         if len(response) > 4000:
             response = response[:3997] + "..."
@@ -212,7 +222,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         # Store for publishing
         context.user_data['last_response'] = response
     else:
-        await update.message.reply_text("❌ I couldn't process that. Please try again or use /cancel to start over.")
+        # If AI returns an error, show a helpful message
+        error_message = (
+            "❌ I couldn't process your request. Here are some tips:\n\n"
+            "• Try rephrasing your text\n"
+            "• Make sure the text is clear\n"
+            "• Try a different action\n"
+            "• Use /cancel and try again\n\n"
+            f"Error: {response if response else 'Unknown error'}"
+        )
+        await update.message.reply_text(error_message)
 
     return CHOOSING_ACTION
 
