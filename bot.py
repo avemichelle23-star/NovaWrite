@@ -28,7 +28,17 @@ if not GEMINI_API_KEY:
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash-exp')
+
+# Use a model that's available in the free tier
+# Options: "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash-lite"
+try:
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    logger.info("✅ Using gemini-1.5-flash model")
+except Exception as e:
+    logger.error(f"❌ Error loading model: {e}")
+    # Fallback to a simpler model
+    model = genai.GenerativeModel('gemini-pro')
+    logger.info("✅ Using gemini-pro model")
 
 # Conversation states
 CHOOSING_ACTION, AWAITING_TEXT, AWAITING_PUBLISH = range(3)
@@ -181,7 +191,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     # Get AI response
     response = get_ai_response(user_text, instruction)
 
-    if response:
+    if response and not response.startswith("❌ AI Error"):
         # Truncate if too long (Telegram limit is 4096 characters)
         if len(response) > 4000:
             response = response[:3997] + "..."
